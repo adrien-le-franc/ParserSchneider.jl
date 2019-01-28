@@ -1,0 +1,8 @@
+name = "ParserSchneider"
+uuid = "e98ff1d4-2307-11e9-168d-f14c22eb4d01"
+authors = ["Unknown "]
+version = "0.1.0"
+
+[deps]
+JSON = "682c06a0-de6a-54ab-a142-c8b1cf79cde6"
+ProgressMeter = "92933f4c-e287-5a05-a399-4b506db050ca"
