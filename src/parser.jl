@@ -120,6 +120,6 @@ function load_schneider(clean_json::String, field::String; site_id::Union{Int64,
 			error("selected arguments result in empty data set")
 		end
 
-	return array
+	return convert(Array{Float64}, array)
 
 end
