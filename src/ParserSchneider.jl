@@ -1,6 +1,6 @@
 module ParserSchneider
 
-using JSON, ProgressMeter
+using JSON, ProgressMeter, Dates
 
 include("parser.jl")
 

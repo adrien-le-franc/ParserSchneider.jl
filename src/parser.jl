@@ -2,8 +2,6 @@
 #
 # functions for parsing .json data from Schneider 
 
-using JSON, ProgressMeter
-
 
 function clean_data_schneider(json_file::String, new_json::String)
 
@@ -40,16 +38,21 @@ function clean_data_schneider(json_file::String, new_json::String)
 	    if haskey(data[site], day) == false 
 	        
 	        data[site][day] = Dict("pv"=>zeros(96), "load"=>zeros(96), "sale_price"=>zeros(96), 
-	            "purchase_price"=>zeros(96), "t"=>0)
+	            "purchase_price"=>zeros(96), "pv_forecast_15"=>zeros(96),
+	            "load_forecast_15"=>zeros(96), "total"=>0)
 	        
 	    end
-	            
+	       
+	    # energy data stored in kWh  
+
 	    dict = data[site][day]
 	    dict["pv"][time] = fields["pv_values"] / 1000
 	    dict["load"][time] = fields["load_values"] / 1000 
 	    dict["sale_price"][time] = fields["sale_price"] 
 	    dict["purchase_price"][time] = fields["purchase_price"]
-	    dict["t"] += 1
+	    dict["pv_forecast_15"][time] = fields["pv_forecast_15"] / 1000
+	    dict["load_forecast_15"][time] = fields["load_forecast_15"] / 1000
+	    dict["total"] += 1
 	    data[site][day] = dict
 	    
 	end
@@ -59,7 +62,7 @@ function clean_data_schneider(json_file::String, new_json::String)
 
 	    for key in keys(data[id])
 
-	        n_intervals = data[id][key]["t"]
+	        n_intervals = data[id][key]["total"]
 	        if n_intervals != 96
 	            delete!(data[id], key)
 	        end
@@ -74,8 +77,8 @@ function clean_data_schneider(json_file::String, new_json::String)
 
 end
 
-function load_schneider(clean_json::String, field::String; site_id::Union{Int64, Tuple{Vararg{Int64}}}=(2, 32),
-	winter::Bool=true, summer::Bool=true)
+function load_schneider(clean_json::String; site_id::Union{Int64, Tuple{Vararg{Int64}}}=(2, 32),
+	winter::Bool=true, summer::Bool=true, weekend::Bool=true, weekday::Bool=true)
 
 	"""load schneider data: return daylong time series of field
 	clean_json > clean json file
@@ -86,40 +89,86 @@ function load_schneider(clean_json::String, field::String; site_id::Union{Int64,
 	"""
 
 	data = JSON.parsefile(clean_json)
-	array = 0
+
+	dict = Dict("pv"=>0, "load"=>0, "pv_forecast_15"=>0, "load_forecast_15"=>0,
+		"sale_price"=>0, "purchase_price"=>0, "dates"=>String[], "sites"=>String[],
+		"seasons"=>String[], "days"=>String[])
 
 	months = []
+	days = []
+
 	if winter
+		push!(dict["seasons"], "winter")
 		append!(months, [1, 2, 3, 4, 5, 10, 11, 12])
 	end
+
 	if summer
+		push!(dict["seasons"], "summer")
 		append!(months, [6, 7, 8, 9])
 	end
 
+	if weekday
+		push!(dict["days"], "weekday")
+		append!(days, ["Tuesday", "Wednesday", "Friday", "Thursday", "Monday"])
+	end   
+
+ 	if weekend
+ 		push!(dict["days"], "weekend")
+ 		append!(days, ["Saturday", "Sunday"])
+ 	end
+
 	for id in site_id
 
+		push!(dict["sites"], string(id))
 		site = data[string(id)]
-		for key in keys(site)
 
-			month = parse(Int64, split(key, "-")[2])
+		for date in keys(site)
+
+			month = parse(Int64, split(date, "-")[2])
 			if !(month in months)
 				continue
 			end
 
-			if array == 0
-				array = site[key][field]
+			day = Dates.dayname(Dates.Date(date))
+			if !(day in days)
+				continue
+			end
+
+			push!(dict["dates"], date)
+			scenario = site[date]
+
+			if dict["pv"] == 0
+
+				dict["pv"] = scenario["pv"]
+				dict["load"] = scenario["load"]
+				dict["pv_forecast_15"] = scenario["pv_forecast_15"]
+				dict["load_forecast_15"] = scenario["load_forecast_15"]
+				dict["sale_price"] = scenario["sale_price"]
+				dict["purchase_price"] = scenario["purchase_price"]
+
 			else
-				array = hcat(array, site[key][field])
+
+				dict["pv"] = hcat(dict["pv"], scenario["pv"])
+				dict["load"] = hcat(dict["load"], scenario["load"])
+				dict["pv_forecast_15"] = hcat(dict["pv_forecast_15"], scenario["pv_forecast_15"])
+				dict["load_forecast_15"] = hcat(dict["load_forecast_15"], scenario["load_forecast_15"])
+				dict["sale_price"] = hcat(dict["sale_price"], scenario["sale_price"])
+				dict["purchase_price"] = hcat(dict["purchase_price"], scenario["purchase_price"])
+
 			end
 
 		end
 
 	end
 
-	if array == 0
+	if dict["pv"] == 0
 			error("selected arguments result in empty data set")
-		end
+	end
 
-	return convert(Array{Float64}, array)
+	for k in ["pv", "load", "pv_forecast_15", "load_forecast_15", "sale_price", "purchase_price"]
+		dict[k] = convert(Array{Float64}, dict[k])
+	end
+
+	return dict
 
 end
