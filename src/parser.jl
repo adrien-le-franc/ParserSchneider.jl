@@ -3,172 +3,178 @@
 # functions for parsing .json data from Schneider 
 
 
-function clean_data_schneider(json_file::String, new_json::String)
+function parser_raw_schneider(data_path::String)
 
-	"""clean data schneider: clean and reorder daylong time series then save data dict as .json
-	json_file > original json data
-	new_json > name for clean json file
+	"""parse csv file to reorder data as time series
+	data_path > path to csv
+	return: Dict{String, Dict{String, Array{Float64}}}
 
 	"""
 
-	raw = JSON.parsefile(json_file)
+ 	selection = ["timestamp", "actual_consumption", "actual_pv", "load_00", "pv_00",
+ 	"price_buy_00", "price_sell_00"]
+	fields = Dict()
+    data = Dict()
+    k=0
+    
+    open(data_path, "r") do in_file
+            
+        for line in eachline(in_file)
 
-	data = Dict(2=>Dict(), 32=>Dict())
-	n_data = length(raw)
-	total = 0
+            if k == 0
+                header = split(line, ",")
+                for (i, key) in enumerate(header)
+                    if key in selection
+                        fields[key] = i
+                    end
+                end
+                k += 1
+                continue
+            end
+            
+            line = split(line, ",")
+            
+            date = split(line[fields["timestamp"]], " ")
+            day = date[1]
+            timer = date[2]
+            h = parse(Int64, timer[1:2])
+            m = parse(Int64, timer[4:5])
+            timer = Int(h*4 + m/15 + 1)
 
-	@showprogress for i in 1:n_data
-	    
-	    fields = raw[i]["fields"]
-	    
-	    if length(fields) != 199
-	        continue
-	    end
-	    
-	    total += 1
-	    
-	    site = fields["siteid"]
-	    date = split(fields["timestamp"], "T")
-	    day = date[1]
-	    time = date[2]
-	    h = parse(Int64, time[1:2])
-	    m = parse(Int64, time[4:5])
-	    time = Int(h*4 + m/15 + 1)
-	    
-	    if haskey(data[site], day) == false 
-	        
-	        data[site][day] = Dict("pv"=>zeros(96), "load"=>zeros(96), "sale_price"=>zeros(96), 
-	            "purchase_price"=>zeros(96), "pv_forecast_15"=>zeros(96),
-	            "load_forecast_15"=>zeros(96), "total"=>0)
-	        
-	    end
-	       
-	    # energy data stored in kWh  
+            if haskey(data, day) == false
+                data[day] = Dict("load"=>zeros(96), "pv"=>zeros(96),
+                	"load_forecast"=>zeros(96), "pv_forecast"=>zeros(96),
+                	"price_buy"=>zeros(96), "price_sell"=>zeros(96), "total"=>0)
+            end
 
-	    dict = data[site][day]
-	    dict["pv"][time] = fields["pv_values"] / 1000
-	    dict["load"][time] = fields["load_values"] / 1000 
-	    dict["sale_price"][time] = fields["sale_price"] 
-	    dict["purchase_price"][time] = fields["purchase_price"]
-	    dict["pv_forecast_15"][time] = fields["pv_forecast_15"] / 1000
-	    dict["load_forecast_15"][time] = fields["load_forecast_15"] / 1000
-	    dict["total"] += 1
-	    data[site][day] = dict
-	    
-	end
+            dict = data[day]
+            dict["load"][timer] = parse(Float64, line[fields["actual_consumption"]]) / 1000
+            dict["pv"][timer] = parse(Float64, line[fields["actual_pv"]]) / 1000
+            dict["load_forecast"][timer] = parse(Float64, line[fields["load_00"]]) / 1000
+            dict["pv_forecast"][timer] = parse(Float64, line[fields["pv_00"]]) / 1000
+            dict["price_buy"][timer] = parse(Float64, line[fields["price_buy_00"]])
+            dict["price_sell"][timer] = parse(Float64, line[fields["price_sell_00"]])
+            dict["total"] += 1
+            data[day] = dict
 
-	# remove uncomplete time series 
-	for id in keys(data)
+        end
+        
+    end
 
-	    for key in keys(data[id])
+    uncomplete = String[]
+    all_days = keys(data)
 
-	        n_intervals = data[id][key]["total"]
-	        if n_intervals != 96
-	            delete!(data[id], key)
-	        end
+    for day in all_days
 
-	    end
-	end
+    	# remove uncomplete time series
+    	if data[day]["total"] != 96
+            push!(uncomplete, day)
+            continue
+        end
 
-	file = JSON.json(data)
-	open(new_json,"w") do f 
-	    write(f, file) 
-	end
+        # shift pv, load which are 15 min late
+        load = data[day]["load"]
+        pv = data[day]["pv"]
+        data[day]["load"] = vcat(load[2:96, :], reshape(load[96, :], (1, :)))
+        data[day]["pv"] = vcat(pv[2:96, :], reshape(pv[96, :], (1, :)))
+
+    	next_day = string(Dates.Date(day) + Dates.Day(1))
+
+    	if next_day in all_days
+    		last_interval = data[next_day]["load"][1]
+    		if last_interval != 0.
+    			data[day]["load"][96] = last_interval
+    		end
+    	end
+
+    end
+
+    for day in uncomplete
+    	delete!(data, day)
+    end
+
+	return data
 
 end
 
-function load_schneider(clean_json::String; site_id::Union{Int64, Tuple{Vararg{Int64}}}=(2, 32),
-	winter::Bool=true, summer::Bool=true, weekend::Bool=true, weekday::Bool=true)
+function load_schneider(data_path::String; winter::Bool=true, summer::Bool=true,
+	weekend::Bool=true, weekday::Bool=true, saturday::Bool=true, sunday::Bool=true)
 
-	"""load schneider data: return daylong time series of field
-	clean_json > clean json file
-	field > "pv", "load", "sale_price", "purchase_price"
-	site_id > 2, 32, (2, 32)
-	season > winter, summer, both in default mode
+	"""load data schneider: reorder and filter time series from raw csv file
+	data_path > path to csv
+	return: Dict{String, Array{Float64}}
 
 	"""
+    
+    data = parser_raw_schneider(data_path)
 
-	data = JSON.parsefile(clean_json)
-
-	dict = Dict("pv"=>0, "load"=>0, "pv_forecast_15"=>0, "load_forecast_15"=>0,
-		"sale_price"=>0, "purchase_price"=>0, "dates"=>String[], "sites"=>String[],
-		"seasons"=>String[], "days"=>String[])
-
-	months = []
-	days = []
+    months = Int64[]
+	days = String[]
 
 	if winter
-		push!(dict["seasons"], "winter")
-		append!(months, [1, 2, 3, 4, 5, 10, 11, 12])
+		append!(months, [1, 2, 3, 4, 10, 11, 12])
 	end
 
 	if summer
-		push!(dict["seasons"], "summer")
-		append!(months, [6, 7, 8, 9])
+		append!(months, [5, 6, 7, 8, 9])
 	end
 
 	if weekday
-		push!(dict["days"], "weekday")
 		append!(days, ["Tuesday", "Wednesday", "Friday", "Thursday", "Monday"])
 	end   
 
  	if weekend
- 		push!(dict["days"], "weekend")
  		append!(days, ["Saturday", "Sunday"])
  	end
 
-	for id in site_id
+ 	if saturday
+ 		append!(days, ["Saturday"])
+ 	end
 
-		push!(dict["sites"], string(id))
-		site = data[string(id)]
+ 	if sunday
+ 		append!(days, ["Sunday"])
+ 	end
 
-		for date in keys(site)
+    results = Dict{String, Array{Float64}}()
 
-			month = parse(Int64, split(date, "-")[2])
+    for day in keys(data)
+
+         month = parse(Int64, split(day, "-")[2])
 			if !(month in months)
 				continue
 			end
 
-			day = Dates.dayname(Dates.Date(date))
-			if !(day in days)
-				continue
-			end
-
-			push!(dict["dates"], date)
-			scenario = site[date]
-
-			if dict["pv"] == 0
-
-				dict["pv"] = scenario["pv"]
-				dict["load"] = scenario["load"]
-				dict["pv_forecast_15"] = scenario["pv_forecast_15"]
-				dict["load_forecast_15"] = scenario["load_forecast_15"]
-				dict["sale_price"] = scenario["sale_price"]
-				dict["purchase_price"] = scenario["purchase_price"]
-
-			else
-
-				dict["pv"] = hcat(dict["pv"], scenario["pv"])
-				dict["load"] = hcat(dict["load"], scenario["load"])
-				dict["pv_forecast_15"] = hcat(dict["pv_forecast_15"], scenario["pv_forecast_15"])
-				dict["load_forecast_15"] = hcat(dict["load_forecast_15"], scenario["load_forecast_15"])
-				dict["sale_price"] = hcat(dict["sale_price"], scenario["sale_price"])
-				dict["purchase_price"] = hcat(dict["purchase_price"], scenario["purchase_price"])
-
-			end
-
+		dayname = Dates.dayname(Dates.Date(day))
+		if !(dayname in days)
+			continue
 		end
 
-	end
+        scenario = data[day]
 
-	if dict["pv"] == 0
-			error("selected arguments result in empty data set")
-	end
+        if haskey(results, "pv") == false
 
-	for k in ["pv", "load", "pv_forecast_15", "load_forecast_15", "sale_price", "purchase_price"]
-		dict[k] = convert(Array{Float64}, dict[k])
-	end
+            results["load"] = scenario["load"]
+            results["pv"] = scenario["pv"]
+            results["load_forecast"] = scenario["load_forecast"]
+            results["pv_forecast"] = scenario["pv_forecast"]
+            results["price_buy"] = scenario["price_buy"]
+            results["price_sell"] = scenario["price_sell"]
 
-	return dict
+        else
+
+            results["load"] = hcat(results["load"], scenario["load"])
+            results["pv"] = hcat(results["pv"], scenario["pv"])
+            results["load_forecast"] = hcat(results["load_forecast"], scenario["load_forecast"])
+            results["pv_forecast"] = hcat(results["pv_forecast"], scenario["pv_forecast"])
+            results["price_buy"] = hcat(results["price_buy"], scenario["price_buy"])
+            results["price_sell"] = hcat(results["price_sell"], scenario["price_sell"])
+
+        end
+
+    end
+
+    return results
 
 end
+
+
