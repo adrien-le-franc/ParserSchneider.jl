@@ -3,7 +3,7 @@
 # functions for parsing .json data from Schneider 
 
 
-function parser_raw_schneider(data_path::String)
+function parse_raw_schneider(data_path::String)
 
 	"""parse csv file to reorder data as time series
 	data_path > path to csv
@@ -12,7 +12,7 @@ function parser_raw_schneider(data_path::String)
 	"""
 
  	selection = ["timestamp", "actual_consumption", "actual_pv", "load_00", "pv_00",
- 	"price_buy_00", "price_sell_00"]
+ 	"price_buy_00", "price_sell_00", "period_id"]
 	fields = Dict()
     data = Dict()
     k=0
@@ -34,6 +34,7 @@ function parser_raw_schneider(data_path::String)
             
             line = split(line, ",")
             
+            period = line[fields["period_id"]]
             date = split(line[fields["timestamp"]], " ")
             day = date[1]
             timer = date[2]
@@ -42,8 +43,8 @@ function parser_raw_schneider(data_path::String)
             timer = Int(h*4 + m/15 + 1)
 
             if haskey(data, day) == false
-                data[day] = Dict("load"=>zeros(96), "pv"=>zeros(96),
-                	"load_forecast"=>zeros(96), "pv_forecast"=>zeros(96),
+                data[day] = Dict("load"=>zeros(96), "pv"=>zeros(96), 
+                    "period"=>period, "load_forecast"=>zeros(96), "pv_forecast"=>zeros(96),
                 	"price_buy"=>zeros(96), "price_sell"=>zeros(96), "total"=>0)
             end
 
@@ -98,7 +99,8 @@ function parser_raw_schneider(data_path::String)
 end
 
 function load_schneider(data_path::String; winter::Bool=true, summer::Bool=true,
-	weekend::Bool=true, weekday::Bool=true, saturday::Bool=true, sunday::Bool=true)
+	weekend::Bool=true, weekday::Bool=true, saturday::Bool=true, sunday::Bool=true,
+    months::Array{Int64}=Int64[])
 
 	"""load data schneider: reorder and filter time series from raw csv file
 	data_path > path to csv
@@ -108,7 +110,6 @@ function load_schneider(data_path::String; winter::Bool=true, summer::Bool=true,
     
     data = parser_raw_schneider(data_path)
 
-    months = Int64[]
 	days = String[]
 
 	if winter
@@ -177,4 +178,80 @@ function load_schneider(data_path::String; winter::Bool=true, summer::Bool=true,
 
 end
 
+function load_prices(data_path::String)
 
+    """load prices for one site csv file, sort periods with common prices
+    data_path > path to csv
+    return: Dict{String,Dict{Array{SubString{String},1},Array{Float64,2}}}
+
+    """
+
+    data = parse_raw_schneider(data_path)
+    prices = Dict()
+
+    for day in keys(data)
+
+        if data[day]["total"] != 96
+            continue
+        end
+
+        period = data[day]["period"]
+
+        if !haskey(prices, period)
+            prices[period] = Dict("buy"=>reshape(data[day]["price_buy"], (1, :)),
+                    "sell"=>reshape(data[day]["price_sell"], (1, :)))
+        else
+            prices[period]["buy"] = vcat(prices[period]["buy"], data[day]["price_buy"]')
+            prices[period]["sell"] = vcat(prices[period]["sell"], data[day]["price_sell"]')
+        end
+
+    end
+
+    buy_scenario = Dict()
+    sell_scenario = Dict()
+
+    for period in keys(prices)
+
+        buy = unique(prices[period]["buy"], dims=1)
+        sell = unique(prices[period]["sell"], dims=1)
+
+        if size(buy)[1] != 1
+            println("WARNING: period $(period) has several buy prices")
+            buy = findmax(prices[period]["buy"], dims=1)[1]
+        end
+
+        if size(sell)[1] != 1
+            println("WARNING: period $(period) has several sell prices")
+            sell = findmax(prices[period]["sell"], dims=1)[1]
+        end
+
+       if !haskey(buy_scenario, buy)
+            buy_scenario[buy] = [period]
+        else
+            push!(buy_scenario[buy], period)
+        end
+
+        if !haskey(sell_scenario, sell)
+            sell_scenario[sell] = [period]
+        else
+            push!(sell_scenario[sell], period)
+        end
+
+    end
+
+    prices = Dict()
+
+    for (price_buy, period_buy) in buy_scenario
+        for (price_sell, period_sell) in sell_scenario
+
+            period = intersect(period_buy, period_sell)
+            if !isempty(period)
+                prices[period] = Dict("buy"=>price_buy, "sell"=>price_sell)
+            end
+
+        end
+    end
+    
+    return prices
+
+end

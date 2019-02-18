@@ -4,6 +4,6 @@ using JSON, ProgressMeter, Dates
 
 include("parser.jl")
 
-export clean_data_schneider, load_schneider
+export parse_raw_schneider, load_schneider, load_prices
 
 end # module
