@@ -99,8 +99,8 @@ function parse_raw_schneider(data_path::String)
 end
 
 function load_schneider(data_path::String; winter::Bool=true, summer::Bool=true,
-	weekend::Bool=true, weekday::Bool=true, saturday::Bool=true, sunday::Bool=true,
-    months::Array{Int64}=Int64[])
+	weekend::Bool=true, weekday::Bool=true, saturday::Bool=false, sunday::Bool=false,
+    months::Array{Int64}=Int64[], days=String[])
 
 	"""load data schneider: reorder and filter time series from raw csv file
 	data_path > path to csv
@@ -108,9 +108,7 @@ function load_schneider(data_path::String; winter::Bool=true, summer::Bool=true,
 
 	"""
     
-    data = parser_raw_schneider(data_path)
-
-	days = String[]
+    data = parse_raw_schneider(data_path)
 
 	if winter
 		append!(months, [1, 2, 3, 4, 10, 11, 12])
@@ -246,7 +244,7 @@ function load_prices(data_path::String)
 
             period = intersect(period_buy, period_sell)
             if !isempty(period)
-                prices[period] = Dict("buy"=>price_buy, "sell"=>price_sell)
+                prices[period] = Dict("buy"=>price_buy', "sell"=>price_sell')
             end
 
         end
