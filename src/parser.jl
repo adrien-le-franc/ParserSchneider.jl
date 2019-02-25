@@ -180,7 +180,7 @@ function load_prices(data_path::String)
 
     """load prices for one site csv file, sort periods with common prices
     data_path > path to csv
-    return: Dict{String,Dict{Array{SubString{String},1},Array{Float64,2}}}
+    return: Dict{Array{SubString{String},1},Dict{String,Array{Float64,1}}}
 
     """
 
@@ -244,7 +244,7 @@ function load_prices(data_path::String)
 
             period = intersect(period_buy, period_sell)
             if !isempty(period)
-                prices[period] = Dict("buy"=>price_buy', "sell"=>price_sell')
+                prices[period] = Dict("buy"=>vec(price_buy), "sell"=>vec(price_sell))
             end
 
         end
