@@ -1,6 +1,175 @@
 # developed under  Julia 1.0.3
 #
-# functions for parsing .json data from Schneider 
+# functions for parsing .csv data from Schneider 
+
+function parse_train_data(data_path::String; pv::Bool=true, load::Bool=true)
+    
+    data = Dict()
+    fields = Dict()
+    selection = String[]
+    
+    if pv
+        push!(selection, "actual_pv")
+    end
+    if load
+        push!(selection, "actual_consumption")
+    end
+    
+    open(data_path, "r") do file
+        for (i, line) in enumerate(eachline(file))
+            
+            #header: get fields position
+            if i == 1
+                header = split(line, ",")
+                for (k, key) in enumerate(header)
+                    if key in selection
+                        fields[key] = k
+                    end
+                end
+                continue
+            end
+            
+            #other lines: collect information
+            line = split(line, ",")
+            timestamp = line[1]
+            day, clock = split(timestamp, " ")
+            day = Dates.Date(day)
+            hour = parse(Int64, clock[1:2])
+            minute = parse(Int64, clock[4:5])
+            quater = Int(hour*4 + minute/15)
+            
+            if quater == 0
+                day = day - Dates.Day(1)
+                quater = 96
+            end
+               
+            if !haskey(data, day)
+                    data[day] = Dict("pv"=>Inf*ones(96), "load"=>Inf*ones(96), "total"=>0)
+            end
+            dict = data[day]
+            if pv
+                dict["pv"][quater] = parse(Float64, line[fields["actual_pv"]]) / 1000
+            end
+            if load
+                dict["load"][quater] = parse(Float64, line[fields["actual_consumption"]]) / 1000
+            end
+            dict["total"] += 1
+            data[day] = dict
+            
+        end
+    end
+    
+    return data
+    
+end
+
+function load_train_data(data_path::String)
+    
+    data = parse_train_data(data_path)
+    pv = Array{Float64}(undef, 0, 0)
+    load = Array{Float64}(undef, 0, 0)
+    column = 1
+    
+    filters = Dict("weekday"=>Int64[], "weekend"=>Int64[], "winter"=>Int64[], "summer"=>Int64[])
+    weekdays = 1:5
+    summer = 5:9
+    
+    for day in keys(data)
+        
+        if data[day]["total"] != 96
+            continue
+        end
+        
+        if column == 1
+            pv = reshape(data[day]["pv"], (:, 1))
+            load = reshape(data[day]["load"], (:, 1))
+        else
+            pv = hcat(pv, reshape(data[day]["pv"], (:, 1)))
+            load = hcat(load, reshape(data[day]["load"], (:, 1)))
+        end
+        
+        day = Dates.Date(day)
+        
+        if Dates.dayofweek(day) in weekdays
+            push!(filters["weekday"], column)
+        else
+            push!(filters["weekend"], column)
+        end
+        if Dates.month(day) in summer
+            push!(filters["summer"], column)
+        else
+            push!(filters["winter"], column)
+        end
+        
+        column += 1
+    
+    end
+    
+    return pv, load, filters
+        
+end
+
+function load_test_periods(data_path::String)
+    
+    periods = Dict()
+    fields = Dict()
+    selection = ["price_buy_00", "price_sell_00", "period_id", "timestamp"]
+    period = -1
+    
+    open(data_path, "r") do file
+        for (i, line) in enumerate(eachline(file))
+            
+            #header: get fields position
+            if i == 1
+                header = split(line, ",")
+                for (k, key) in enumerate(header)
+                    if key in selection
+                        fields[key] = k
+                    end
+                end
+                continue
+            end
+            
+            #other lines: collect information
+            line = split(line, ",")
+            current_period = line[fields["period_id"]]
+            if period != current_period
+                timestamp = line[fields["timestamp"]]
+                day, time = split(timestamp, " ")
+                date = Dates.DateTime(day*"T"*time)
+                period = current_period
+                periods[period] = Dict("t0"=>date,
+                    "buy"=>[parse(Float64, line[fields["price_buy_00"]])],
+                    "sell"=>[parse(Float64, line[fields["price_sell_00"]])], 
+                    "total"=>1)
+            else
+                dict = periods[period]
+                push!(dict["buy"], parse(Float64, line[fields["price_buy_00"]]))
+                push!(dict["sell"], parse(Float64, line[fields["price_sell_00"]]))
+                dict["total"] += 1
+                periods[period] = dict
+            end
+
+        end
+    end
+    
+    return periods
+    
+end
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 function parse_raw_schneider(data_path::String)
@@ -251,5 +420,93 @@ function load_prices(data_path::String)
     end
     
     return prices
+
+end
+
+
+function eval_forecasts(data_path::String)
+    """
+    """
+
+    selection = ["timestamp", "actual_consumption", "actual_pv", "actual_consumption"]
+    for t in 0:95
+        #t = i*4
+        if t < 10
+            push!(selection, "pv_0"*string(t))
+            push!(selection, "load_0"*string(t))
+        else
+            push!(selection, "pv_"*string(t))
+            push!(selection, "load_"*string(t))
+        end
+        end
+
+        fields = Dict()
+        data = Dict()
+
+        open(data_path, "r") do in_file
+        k = 0
+        for line in eachline(in_file)
+            
+            if k == 0
+                header = split(line, ",")
+                
+                for (i, key) in enumerate(header)
+                    if key in selection
+                        fields[key] = i
+                    end
+                end
+                k += 1
+                continue
+            end
+
+            line = split(line, ",")
+            date = split(line[1], " ")
+            day, time = date
+            date = Dates.DateTime(day*"T"*time)
+            data[date] = line
+        end
+    end
+
+    ###
+
+    results = Dict(i=>Dict("pv"=>Float64[], "load"=>Float64[]) for i in 1:96);
+
+    for (date, values) in data
+        
+        for i in 1:96
+            
+            hour = div(i, 4)
+            minute = rem(i, 4)*15
+
+            quater = date + Dates.Hour(hour) + Dates.Minute(minute)
+            if !(quater in keys(data))
+                continue
+            end
+            
+            key_pv = "pv_"
+            key_load = "load_"
+            t = i-1
+            if t < 10
+                key_pv = key_pv*"0"*string(t)
+                key_load = key_load*"0"*string(t)
+            else
+                key_pv = key_pv*string(t)
+                key_load = key_load*string(t)
+            end
+            
+            
+            pv_forecast = parse(Float64, values[fields[key_pv]]) / 1000
+            pv_real = parse(Float64, data[quater][fields["actual_pv"]]) / 1000
+            push!(results[i]["pv"], pv_real-pv_forecast)
+            
+            load_forecast = parse(Float64, values[fields[key_load]]) / 1000
+            load_real = parse(Float64, data[quater][fields["actual_consumption"]]) / 1000
+            push!(results[i]["load"], load_real-load_forecast)
+            
+        end
+        
+    end
+
+    return results
 
 end
