@@ -88,8 +88,6 @@ function load_train_data(data_path::String)
             load = hcat(load, reshape(data[day]["load"], (:, 1)))
         end
         
-        day = Dates.Date(day)
-        
         if Dates.dayofweek(day) in weekdays
             push!(filters["weekday"], column)
         else
@@ -157,7 +155,66 @@ function load_test_periods(data_path::String)
     
 end
 
-
+function load_train_data_with_lags(data_path::String)
+    
+    data = parse_train_data(data_path)
+    pv = Array{Float64}(undef, 0, 0)
+    pv_lag = Array{Float64}(undef, 0, 0)
+    load = Array{Float64}(undef, 0, 0)
+    load_lag = Array{Float64}(undef, 0, 0)
+    column = 1
+    
+    filters = Dict("weekday"=>Int64[], "weekend"=>Int64[], "winter"=>Int64[], "summer"=>Int64[])
+    weekdays = 1:5
+    summer = 5:9
+    
+    for day in keys(data)
+        
+        yesterday = day - Dates.Day(1)
+        
+        if data[day]["total"] != 96 || !(yesterday in keys(data))
+            continue
+        end
+    
+        pv_yesterday = [data[yesterday]["pv"][96]]
+        load_yesterday = [data[yesterday]["load"][96]]
+        
+        if pv_yesterday == Inf || load_yesterday == Inf
+            continue
+        end
+        
+        if column == 1
+            pv = reshape(data[day]["pv"], (:, 1))
+            pv_lag = vcat(reshape(pv_yesterday, (1, 1)), pv[1:95, 1])
+            load = reshape(data[day]["load"], (:, 1))
+            load_lag = vcat(reshape(load_yesterday, (1, 1)), load[1:95, 1])
+        else
+            pv_today = reshape(data[day]["pv"], (:, 1))
+            pv = hcat(pv, pv_today)
+            pv_lag = hcat(pv_lag, vcat(reshape(pv_yesterday, (1, 1)), pv_today[1:95, 1]))
+            load_today = reshape(data[day]["load"], (:, 1))
+            load = hcat(load, load_today)
+            load_lag = hcat(load_lag, vcat(reshape(load_yesterday, (1, 1)), load_today[1:95, 1]))
+        end
+        
+        if Dates.dayofweek(day) in weekdays
+            push!(filters["weekday"], column)
+        else
+            push!(filters["weekend"], column)
+        end
+        if Dates.month(day) in summer
+            push!(filters["summer"], column)
+        else
+            push!(filters["winter"], column)
+        end
+        
+        column += 1
+    
+    end
+    
+    return pv, pv_lag, load, load_lag, filters
+        
+end
 
 
 
