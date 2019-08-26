@@ -12,6 +12,26 @@ function string_to_date(timestamp::String)
     return Dates.DateTime(day*"T"*timing)
 end
 
+function initialize_control_like_dataframe(example::DataFrame)
+
+    header = Pair{Symbol,Any}[]
+
+    for (row, name) in enumerate(names(example))
+
+        if row == 1
+            push!(header, name => Dates.DateTime[])
+        elseif row < 4
+            push!(header, name => Int64[])
+        else
+            push!(header, name => Float64[])
+        end
+
+    end
+
+    return DataFrame(header...)
+    
+end
+
 function energy_price()
    
     df = DataFrame(timestamp=Dates.Time[], buy=Float64[], sell=Float64[])
